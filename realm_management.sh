@@ -5,7 +5,7 @@
 
 
 SCRIPT_NAME="Realm 管理脚本"
-SCRIPT_VERSION="1.9"
+SCRIPT_VERSION="1.9.1"
 
 
 
@@ -329,12 +329,17 @@ check_github_and_get_proxy() {
 
 
 install_realm() {
-    local REINSTALL_MODE=${1:-"false"}
     _log info "开始安装或更新 Realm..."
 
-    if [[ "$REINSTALL_MODE" == "false" ]] && [[ -f "$REALM_BIN_PATH" ]]; then
-        _log warn "Realm 似乎已安装。如果想重新安装，请选择主菜单的'重新安装'选项。"
-        return
+
+    if [[ -f "$REALM_BIN_PATH" ]]; then
+        _log warn "Realm 似乎已安装。"
+        read -p "是否要继续并覆盖当前版本? [y/N]: " confirm_reinstall
+        if [[ "${confirm_reinstall}" != "y" && "${confirm_reinstall}" != "Y" ]]; then
+            _log info "操作已取消。"
+            return
+        fi
+        _log info "好的，将继续重新安装/更新 Realm..."
     fi
 
     check_github_and_get_proxy
@@ -420,7 +425,8 @@ install_realm() {
     mv -f "$extracted_file" "$REALM_BIN_PATH"
     chmod +x "$REALM_BIN_PATH"
 
-    if [[ "$REINSTALL_MODE" == "false" ]]; then
+
+    if [[ ! -f "$REALM_SERVICE_FILE" ]]; then
         mkdir -p "$REALM_CONFIG_DIR"
         detect_config_file
         if [[ ! -f "$REALM_CONFIG_FILE" ]]; then
@@ -453,7 +459,7 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
         systemctl enable realm
-        _log succ "Realm ($LATEST_VERSION-$libc_type) 安装完成！"
+        _log succ "Realm ($LATEST_VERSION-$libc_type) 首次安装完成！"
     else
         _log succ "Realm 二进制文件已更新为 $LATEST_VERSION-$libc_type！"
     fi
@@ -1082,7 +1088,7 @@ main_menu() {
         local needs_pause=true
         case "$choice" in
             1)
-                install_realm "false"
+                install_realm
                 ;;
             2)
                 uninstall_realm
