@@ -1,0 +1,2 @@
+# 将所有文本文件在检出时都转换为 LF
+* text=auto eol=lf
