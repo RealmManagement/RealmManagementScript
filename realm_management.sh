@@ -5,7 +5,7 @@
 
 
 SCRIPT_NAME="Realm 管理脚本"
-SCRIPT_VERSION="1.8"
+SCRIPT_VERSION="1.9"
 
 
 
@@ -869,14 +869,21 @@ manage_health_checks() {
                 line_count=$(wc -l < "$HEALTH_CHECK_CONFIG_FILE")
                 read -p "请输入要删除的配置编号 (1-${line_count}, 输入0取消): " num_to_del
 
+
+                if ! [[ "$num_to_del" =~ ^[0-9]+$ ]]; then
+                    _log err "无效的输入，请输入一个数字。"
+                    sleep 2
+                    continue
+                fi
+
                 if [[ "$num_to_del" -eq 0 ]]; then
                     _log info "操作已取消。"
                     sleep 1
                     continue
                 fi
 
-                if ! [[ "$num_to_del" =~ ^[0-9]+$ ]] || (( num_to_del < 1 || num_to_del > line_count )); then
-                    _log err "无效的编号。"
+                if (( num_to_del < 1 || num_to_del > line_count )); then
+                    _log err "无效的编号。请输入 1 到 ${line_count} 之间的数字。"
                     sleep 2
                     continue
                 fi
@@ -902,23 +909,32 @@ manage_health_checks() {
                 read -p "请选择检测范围: " check_scope
                 
                 case "$check_scope" in
-                    1) run_manual_health_check ;;
+                    1)
+                        run_manual_health_check
+                        ;;
                     2)
                         local line_count
                         line_count=$(wc -l < "$HEALTH_CHECK_CONFIG_FILE")
                         read -p "请输入要检测的配置编号 (1-${line_count}): " num_to_run
                         
-                        if ! [[ "$num_to_run" =~ ^[0-9]+$ ]] || (( num_to_run < 1 || num_to_run > line_count )); then
-                            _log err "无效的编号。"
+
+                        if ! [[ "$num_to_run" =~ ^[0-9]+$ ]]; then
+                            _log err "无效的输入，请输入一个数字。"
+                        elif (( num_to_run < 1 || num_to_run > line_count )); then
+                            _log err "无效的编号。请输入 1 到 ${line_count} 之间的数字。"
                         else
                             run_manual_health_check "$num_to_run"
                         fi
                         ;;
-                    *) _log info "操作已取消。" ;;
+                    *)
+                        _log info "操作已取消。"
+                        ;;
                 esac
                 read -n 1 -s -r -p "按任意键返回..."
                 ;;
-            0) break ;;
+            0)
+                break
+                ;;
             *)
                 _log err "无效输入"
                 sleep 1

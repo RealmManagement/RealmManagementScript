@@ -32,12 +32,14 @@ _log() {
     local color_cyan=$'\033[0;36m'
     local color_red=$'\033[0;31m'
     local color_yellow=$'\033[0;33m'
+
+
     case "$type" in
         info)
-            echo -e "${color_cyan}[INFO]${color_reset} $msg"
+            echo -e "${color_cyan}[INFO]${color_reset} $msg" >&2
             ;;
         warn)
-            echo -e "${color_yellow}[WARN]${color_reset} $msg"
+            echo -e "${color_yellow}[WARN]${color_reset} $msg" >&2
             ;;
         err)
             echo -e "${color_red}[ERROR]${color_reset} $msg" >&2
@@ -125,7 +127,6 @@ init_and_activate_env() {
             fi
 
             _log info "正在使用 '$pm' 安装 '$venv_pkg'..."
-
             if [[ "$pm" == "apt" ]]; then
                 apt-get update
                 apt-get install -y "$venv_pkg"
