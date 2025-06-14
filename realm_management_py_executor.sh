@@ -61,9 +61,10 @@ init_and_activate_env() {
         if [[ "$PYTHON_ENV_SOURCE" != "python-venv" ]]; then
 
             if [[ -n "$CONDA_PREFIX" && "$(realpath "$CONDA_PREFIX")" == "$(realpath "$VENV_PATH")" ]]; then
-                _log info "Conda 环境已激活。"
+
+                :
             elif [ -f "${VENV_PATH}/bin/activate" ]; then
-                _log info "正在激活环境: ${VENV_PATH}"
+
                 source "${VENV_PATH}/bin/activate"
             else
                 _log err "在 ${VENV_PATH} 中找不到有效的 activate 脚本。"
@@ -71,7 +72,7 @@ init_and_activate_env() {
             fi
         else
 
-            _log info "检测到 venv 环境，正在激活..."
+
             source "${VENV_PATH}/bin/activate"
         fi
     else
@@ -160,14 +161,14 @@ init_and_activate_env() {
         exit 1
     fi
 
-    _log info "正在从 ${REQUIREMENTS_FILE} 安装或检查依赖..."
+
     if [ -f "$REQUIREMENTS_FILE" ]; then
         "$active_pip" install -q --root-user-action=ignore -r "$REQUIREMENTS_FILE"
     else
         _log err "'requirements.txt' 文件未找到！"
         exit 1
     fi
-    _log info "Python 环境已就绪。"
+
 }
 
 
