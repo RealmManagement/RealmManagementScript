@@ -8,7 +8,7 @@
 
 
 SCRIPT_NAME="Realm 管理脚本"
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.0.1"
 
 
 

@@ -148,4 +148,5 @@ _log succ "脚本文件已成功更新！"
 
 _log info "正在重启管理脚本..."
 sleep 2
+chmod +x $MAIN_SCRIPT_TO_RESTART
 exec "$MAIN_SCRIPT_TO_RESTART"
