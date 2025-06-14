@@ -4,9 +4,11 @@
 
 
 
-SCRIPT_NAME="Realm 管理脚本"
-SCRIPT_VERSION="1.9.2"
 
+
+
+SCRIPT_NAME="Realm 管理脚本"
+SCRIPT_VERSION="2.0"
 
 
 
@@ -23,10 +25,10 @@ LIGHT_RED=$'\033[1;31m'
 
 
 
-
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 PYTHON_EXECUTOR_SCRIPT="${SCRIPT_DIR}/realm_management_py_executor.sh"
 PYTHON_INSTALLER_SCRIPT="${SCRIPT_DIR}/install_python.sh"
+UPDATE_SCRIPT_PATH="${SCRIPT_DIR}/update_script.sh"
 REQUIREMENTS_FILE="${SCRIPT_DIR}/requirements.txt"
 MANAGER_SETTINGS_FILE="${SCRIPT_DIR}/.realm_management_script_config.conf"
 
@@ -47,6 +49,7 @@ HEALTH_CHECK_CONFIG_FILE="${REALM_CONFIG_DIR}/health_checks.conf"
 DAEMON_PID_FILE="/var/run/realm_health_check_daemon.pid"
 HEALTH_CHECK_LOG_FILE="/var/log/realm_health_check.log"
 STATE_BACKUP_FILE="${SCRIPT_DIR}/state.backup.json"
+
 
 
 
@@ -72,15 +75,14 @@ _log() {
 
 
 initialize_settings() {
-
     touch "$MANAGER_SETTINGS_FILE"
-
 
     if ! grep -q "^REALM_CONFIG_DIR=" "$MANAGER_SETTINGS_FILE" 2>/dev/null; then
         _log info "未找到 Realm 配置目录设置，将使用默认值: /etc/realm"
         echo "REALM_CONFIG_DIR=\"/etc/realm\"" >> "$MANAGER_SETTINGS_FILE"
     fi
 }
+
 
 load_manager_settings() {
     if [[ -f "$MANAGER_SETTINGS_FILE" ]]; then
@@ -90,6 +92,7 @@ load_manager_settings() {
         HEALTH_CHECK_CONFIG_FILE="${REALM_CONFIG_DIR}/health_checks.conf"
     fi
 }
+
 
 detect_config_file() {
     if [[ -n "$REALM_CONFIG_FILE" && -f "$REALM_CONFIG_FILE" ]]; then
@@ -106,11 +109,11 @@ detect_config_file() {
         REALM_CONFIG_FILE="$json_file"
         REALM_CONFIG_TYPE="json"
     else
-
         REALM_CONFIG_FILE="$toml_file"
         REALM_CONFIG_TYPE="toml"
     fi
 }
+
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -118,6 +121,7 @@ check_root() {
         exit 1
     fi
 }
+
 
 takeover_running_realm() {
     local running_process
@@ -136,7 +140,7 @@ takeover_running_realm() {
                 echo "  - 正在运行的实例配置: $config_path"
                 echo "  - 当前脚本管理目录: $REALM_CONFIG_DIR"
                 
-                read -p "是否接管此Realm实例的配置? [Y/n]: " choice
+                read -e -p "是否接管此Realm实例的配置? [Y/n]: " choice
                 choice=${choice:-Y}
                 
                 if [[ "$choice" == "Y" ]] || [[ "$choice" == "y" ]]; then
@@ -186,7 +190,7 @@ check_dependencies() {
 
     if [[ ${#missing_cmds[@]} -gt 0 ]]; then
         _log warn "检测到缺失的系统命令: ${missing_cmds[*]}"
-        read -p "是否尝试自动安装这些依赖? [Y/n]: " choice
+        read -e -p "是否尝试自动安装这些依赖? [Y/n]: " choice
         choice=${choice:-Y}
         if [[ "$choice" != "Y" ]] && [[ "$choice" != "y" ]]; then
             _log err "用户拒绝安装依赖，脚本退出。"
@@ -290,6 +294,7 @@ check_helper_scripts() {
         "$DEFAULT_PING_SCRIPT_PATH"
         "$VALIDATOR_SCRIPT_PATH"
         "$PYTHON_INSTALLER_SCRIPT"
+        "$UPDATE_SCRIPT_PATH"
         "$REQUIREMENTS_FILE"
     )
     for script_path in "${required_scripts[@]}"; do
@@ -300,7 +305,7 @@ check_helper_scripts() {
         fi
     done
 
-    local scripts_to_check_exec=("$0" "$PYTHON_EXECUTOR_SCRIPT" "$DEFAULT_PING_SCRIPT_PATH")
+    local scripts_to_check_exec=("$0" "$PYTHON_EXECUTOR_SCRIPT" "$DEFAULT_PING_SCRIPT_PATH" "$UPDATE_SCRIPT_PATH")
     for script_path in "${scripts_to_check_exec[@]}"; do
         if [[ ! -x "$script_path" ]]; then
             _log warn "脚本文件需要执行权限: $script_path"
@@ -331,10 +336,9 @@ check_github_and_get_proxy() {
 install_realm() {
     _log info "开始安装或更新 Realm..."
 
-
     if [[ -f "$REALM_BIN_PATH" ]]; then
         _log warn "Realm 似乎已安装。"
-        read -p "是否要继续并覆盖当前版本? [y/N]: " confirm_reinstall
+        read -e -p "是否要继续并覆盖当前版本? [y/N]: " confirm_reinstall
         if [[ "${confirm_reinstall}" != "y" && "${confirm_reinstall}" != "Y" ]]; then
             _log info "操作已取消。"
             return
@@ -349,7 +353,7 @@ install_realm() {
     echo "  1) gnu  (标准版, 兼容性好, 适用于大多数桌面/服务器系统)"
     echo "  2) musl (轻量版, 适用于容器环境或嵌入式系统)"
     echo "-----------------------------------------------------"
-    read -p "请输入选项 [默认: 1]: " libc_choice
+    read -e -p "请输入选项 [默认: 1]: " libc_choice
     libc_choice=${libc_choice:-1}
 
     local libc_type=""
@@ -425,7 +429,6 @@ install_realm() {
     mv -f "$extracted_file" "$REALM_BIN_PATH"
     chmod +x "$REALM_BIN_PATH"
 
-
     if [[ ! -f "$REALM_SERVICE_FILE" ]]; then
         mkdir -p "$REALM_CONFIG_DIR"
         detect_config_file
@@ -435,9 +438,6 @@ install_realm() {
 
 log_level = "info"
 log_path = "/var/log/realm.log"
-
-
-
 
 EOF
         fi
@@ -467,6 +467,7 @@ EOF
     _log info "请使用主菜单中的 '启动/重启 Realm' 选项来启动服务。"
     rm -f "$temp_file"
 }
+
 
 uninstall_realm() {
     _log warn "这将彻底卸载 Realm！"
@@ -515,7 +516,7 @@ manage_config() {
     detect_config_file
     if [[ ! -f "$REALM_CONFIG_FILE" ]]; then
         _log info "当前不存在配置文件。"
-        read -p "您想创建哪种格式的配置文件? (1 for .toml, 2 for .json) [默认: 1]: " format_choice
+        read -e -p "您想创建哪种格式的配置文件? (1 for .toml, 2 for .json) [默认: 1]: " format_choice
         format_choice=${format_choice:-1}
         if [[ "$format_choice" == "1" ]]; then
             REALM_CONFIG_FILE="${REALM_CONFIG_DIR}/config.toml"
@@ -543,7 +544,7 @@ manage_config() {
     "$editor" "$REALM_CONFIG_FILE"
     _log info "配置文件已保存。"
 
-    read -p "是否立即检查配置文件有效性? [Y/n]: " check_now
+    read -e -p "是否立即检查配置文件有效性? [Y/n]: " check_now
     check_now=${check_now:-Y}
     if [[ "$check_now" == "y" || "$check_now" == "Y" ]]; then
         check_config_and_start "check_only"
@@ -576,6 +577,7 @@ check_config_and_start() {
         fi
     fi
 }
+
 
 stop_realm() {
     _log info "正在停止 Realm 服务..."
@@ -664,6 +666,7 @@ parse_upstreams_from_config() {
     bash "$PYTHON_EXECUTOR_SCRIPT" parse_upstreams "$REALM_CONFIG_FILE"
 }
 
+
 modify_upstream_state() {
     local address="$1"
     local action="$2"
@@ -673,6 +676,7 @@ modify_upstream_state() {
         _log err "配置文件修改失败，请检查 Python 脚本输出。"
     fi
 }
+
 
 run_manual_health_check() {
     local line_to_check=$1 
@@ -785,6 +789,7 @@ run_manual_health_check() {
     fi
 }
 
+
 manage_health_checks() {
     if [[ ! -f "$DEFAULT_PING_SCRIPT_PATH" ]]; then
         _log err "默认 ping 检测脚本 '${DEFAULT_PING_SCRIPT_PATH}' 不存在！"
@@ -807,7 +812,7 @@ manage_health_checks() {
         echo "2. 删除一个上游检测"
         echo "3. 立即执行一次检测"
         echo "0. 返回主菜单"
-        read -p "请选择: " choice
+        read -e -p "请选择: " choice
 
         case "$choice" in
             1)
@@ -873,8 +878,7 @@ manage_health_checks() {
                 
                 local line_count
                 line_count=$(wc -l < "$HEALTH_CHECK_CONFIG_FILE")
-                read -p "请输入要删除的配置编号 (1-${line_count}, 输入0取消): " num_to_del
-
+                read -e -p "请输入要删除的配置编号 (1-${line_count}, 输入0取消): " num_to_del
 
                 if ! [[ "$num_to_del" =~ ^[0-9]+$ ]]; then
                     _log err "无效的输入，请输入一个数字。"
@@ -912,7 +916,7 @@ manage_health_checks() {
                 echo "  1) 全部检测"
                 echo "  2) 选择单个检测"
                 echo "  0) 取消"
-                read -p "请选择检测范围: " check_scope
+                read -e -p "请选择检测范围: " check_scope
                 
                 case "$check_scope" in
                     1)
@@ -921,9 +925,8 @@ manage_health_checks() {
                     2)
                         local line_count
                         line_count=$(wc -l < "$HEALTH_CHECK_CONFIG_FILE")
-                        read -p "请输入要检测的配置编号 (1-${line_count}): " num_to_run
+                        read -e -p "请输入要检测的配置编号 (1-${line_count}): " num_to_run
                         
-
                         if ! [[ "$num_to_run" =~ ^[0-9]+$ ]]; then
                             _log err "无效的输入，请输入一个数字。"
                         elif (( num_to_run < 1 || num_to_run > line_count )); then
@@ -949,6 +952,7 @@ manage_health_checks() {
     done
 }
 
+
 configure_health_check_cycle() {
     _log info "配置健康检测周期 (Cron 表达式)"
     
@@ -972,7 +976,7 @@ configure_health_check_cycle() {
         _log succ "健康检测周期已更新为: ${new_cron}"
         
         if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
-            read -p "健康检测服务正在运行。是否要立即重启以应用新的周期? [Y/n]: " restart_choice
+            read -e -p "健康检测服务正在运行。是否要立即重启以应用新的周期? [Y/n]: " restart_choice
             if [[ ${restart_choice:-Y} =~ ^[Yy]$ ]]; then
                 _log info "正在重启健康检测服务..."
                 stop_health_check_daemon
@@ -1021,6 +1025,7 @@ start_or_restart_health_check_daemon() {
     fi
 }
 
+
 stop_health_check_daemon() {
     if [[ ! -f "$DAEMON_PID_FILE" ]] || ! ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
         _log warn "健康检测守护进程未运行。"
@@ -1044,6 +1049,7 @@ stop_health_check_daemon() {
     _log succ "健康检测守护进程已停止。"
 }
 
+
 status_health_check_daemon() {
     if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
         _log succ "健康检测守护进程正在运行 (PID: $(cat "$DAEMON_PID_FILE"))."
@@ -1051,6 +1057,20 @@ status_health_check_daemon() {
         tail -n 30 "$HEALTH_CHECK_LOG_FILE"
     else
         _log err "健康检测守护进程未运行。"
+    fi
+}
+
+
+update_management_script() {
+    _log warn "这将从 GitHub 下载最新版本的管理脚本并覆盖当前文件。"
+    _log warn "请确保您没有对脚本文件进行任何本地修改，否则修改将会丢失。"
+    read -e -p "确定要继续吗? [Y/n]: " choice
+    choice=${choice:-Y}
+    if [[ "$choice" == "Y" ]] || [[ "$choice" == "y" ]]; then
+
+        bash "$UPDATE_SCRIPT_PATH" "$0" "$SCRIPT_VERSION"
+    else
+        _log info "更新操作已取消。"
     fi
 }
 
@@ -1081,9 +1101,11 @@ main_menu() {
         echo " 10. 查看健康检测服务状态"
         echo " 11. 配置健康检测周期 (Cron)"
         echo "-----------------------------------------------------"
+        echo " 12. 更新管理脚本"
+        echo "-----------------------------------------------------"
         echo " 0. 退出脚本"
         echo ""
-        read -p "请输入选项 [0-11]: " choice
+        read -e -p "请输入选项 [0-12]: " choice
 
         local needs_pause=true
         case "$choice" in
@@ -1132,6 +1154,11 @@ main_menu() {
                     configure_health_check_cycle
                 fi
                 ;;
+            12)
+                update_management_script
+
+                needs_pause=false
+                ;;
             0)
                 _log info "退出脚本。"
                 exit 0
@@ -1147,6 +1174,7 @@ main_menu() {
         fi
     done
 }
+
 
 
 check_root
