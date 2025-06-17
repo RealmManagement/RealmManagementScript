@@ -8,7 +8,8 @@
 
 
 SCRIPT_NAME="Realm 管理脚本"
-SCRIPT_VERSION="2.0.1"
+
+SCRIPT_VERSION="2.1"
 
 
 
@@ -31,9 +32,7 @@ PYTHON_INSTALLER_SCRIPT="${SCRIPT_DIR}/install_python.sh"
 UPDATE_SCRIPT_PATH="${SCRIPT_DIR}/update_script.sh"
 REQUIREMENTS_FILE="${SCRIPT_DIR}/requirements.txt"
 MANAGER_SETTINGS_FILE="${SCRIPT_DIR}/.realm_management_script_config.conf"
-
 VENV_PATH="${SCRIPT_DIR}/.venv"
-
 REALM_BIN_PATH="/usr/local/bin/realm"
 REALM_CONFIG_DIR="/etc/realm"
 REALM_CONFIG_FILE=""
@@ -41,14 +40,20 @@ REALM_CONFIG_TYPE=""
 REALM_SERVICE_FILE="/etc/systemd/system/realm.service"
 GITHUB_BASE_URL="https://github.com"
 
+
+DAEMON_SERVICE_FILE="/etc/systemd/system/realm_health_check.service"
+
 DAEMON_CONFIG_FILE="${REALM_CONFIG_DIR}/daemon.conf"
 DAEMON_SCRIPT_PATH="${SCRIPT_DIR}/health_checker_daemon.py"
 DEFAULT_PING_SCRIPT_PATH="${SCRIPT_DIR}/ping_check.sh"
+
+DEFAULT_TCP_PING_SCRIPT_PATH="${SCRIPT_DIR}/tcp_ping_check.sh"
 VALIDATOR_SCRIPT_PATH="${SCRIPT_DIR}/validator.py"
 HEALTH_CHECK_CONFIG_FILE="${REALM_CONFIG_DIR}/health_checks.conf"
-DAEMON_PID_FILE="/var/run/realm_health_check_daemon.pid"
 HEALTH_CHECK_LOG_FILE="/var/log/realm_health_check.log"
 STATE_BACKUP_FILE="${SCRIPT_DIR}/state.backup.json"
+
+DAEMON_PID_FILE="/var/run/realm_health_check_daemon.pid"
 
 
 
@@ -292,6 +297,7 @@ check_helper_scripts() {
         "$PYTHON_EXECUTOR_SCRIPT"
         "$DAEMON_SCRIPT_PATH"
         "$DEFAULT_PING_SCRIPT_PATH"
+        "$DEFAULT_TCP_PING_SCRIPT_PATH"
         "$VALIDATOR_SCRIPT_PATH"
         "$PYTHON_INSTALLER_SCRIPT"
         "$UPDATE_SCRIPT_PATH"
@@ -305,7 +311,13 @@ check_helper_scripts() {
         fi
     done
 
-    local scripts_to_check_exec=("$0" "$PYTHON_EXECUTOR_SCRIPT" "$DEFAULT_PING_SCRIPT_PATH" "$UPDATE_SCRIPT_PATH")
+    local scripts_to_check_exec=(
+        "$0" 
+        "$PYTHON_EXECUTOR_SCRIPT" 
+        "$DEFAULT_PING_SCRIPT_PATH" 
+        "$DEFAULT_TCP_PING_SCRIPT_PATH" 
+        "$UPDATE_SCRIPT_PATH"
+    )
     for script_path in "${scripts_to_check_exec[@]}"; do
         if [[ ! -x "$script_path" ]]; then
             _log warn "脚本文件需要执行权限: $script_path"
@@ -482,23 +494,28 @@ uninstall_realm() {
     systemctl stop realm
     systemctl disable realm
 
+
     stop_health_check_daemon
 
     _log info "正在删除文件..."
     rm -f "$REALM_BIN_PATH"
     rm -f "$REALM_SERVICE_FILE"
-    systemctl daemon-reload
 
     read -e -p "是否删除所有配置文件和日志? [y/N]: " del_config
     choice=${del_config:-N}
     if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
         _log warn "正在删除配置文件目录: $REALM_CONFIG_DIR"
+
         rm -rf "$REALM_CONFIG_DIR"
         
         _log warn "正在删除健康检测日志、状态文件和脚本配置文件..."
         rm -f "$HEALTH_CHECK_LOG_FILE"
         rm -f "$STATE_BACKUP_FILE"
         rm -f "$MANAGER_SETTINGS_FILE"
+
+        rm -f "$DAEMON_SERVICE_FILE"
+
+        rm -f "$DAEMON_PID_FILE"
 
         read -e -p "是否同时删除 Python 虚拟环境 (.venv)? [y/N]: " del_venv
         if [[ "$del_venv" == "y" || "$del_venv" == "Y" ]]; then
@@ -509,7 +526,11 @@ uninstall_realm() {
     else
         _log succ "Realm 已卸载，但配置文件已保留。"
     fi
+
+
+    systemctl daemon-reload
 }
+
 
 
 manage_config() {
@@ -645,10 +666,20 @@ display_status() {
     fi
 
     local daemon_status_text
-    if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
+
+    if systemctl is-active --quiet realm_health_check; then
+        local daemon_pid
+        daemon_pid=$(systemctl show --property MainPID --value realm_health_check 2>/dev/null)
+        daemon_status_text="${LIGHT_GREEN}运行中 (systemd 服务)${RESET} (PID: ${daemon_pid:-N/A})"
+
+    elif [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
         local daemon_pid
         daemon_pid=$(cat "$DAEMON_PID_FILE")
-        daemon_status_text="${LIGHT_GREEN}运行中${RESET} (PID: ${daemon_pid})"
+        daemon_status_text="${YELLOW}运行中 (旧版 PID 文件)${RESET} (PID: ${daemon_pid})"
+
+    elif systemctl is-enabled --quiet realm_health_check; then
+        daemon_status_text="${YELLOW}已停止 (但已启用)${RESET}"
+
     else
         daemon_status_text="${LIGHT_RED}已停止${RESET}"
     fi
@@ -781,7 +812,7 @@ run_manual_health_check() {
     echo "-------------------------------------"
     _log info "手动检测已完成。"
     
-    if ! [[ -f "$DAEMON_PID_FILE" ]] || ! ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
+    if ! systemctl is-active --quiet realm_health_check; then
         read -e -p "是否要开启后台守护进程以进行持续自动检测? [Y/n]: " start_daemon_choice
         if [[ ${start_daemon_choice:-Y} =~ ^[Yy]$ ]]; then
             start_or_restart_health_check_daemon
@@ -791,11 +822,12 @@ run_manual_health_check() {
 
 
 manage_health_checks() {
-    if [[ ! -f "$DEFAULT_PING_SCRIPT_PATH" ]]; then
-        _log err "默认 ping 检测脚本 '${DEFAULT_PING_SCRIPT_PATH}' 不存在！"
+    if [[ ! -f "$DEFAULT_PING_SCRIPT_PATH" ]] || [[ ! -f "$DEFAULT_TCP_PING_SCRIPT_PATH" ]]; then
+        _log err "一个或多个默认检测脚本不存在！"
         sleep 3
         return
     fi
+
     while true; do
         clear
         echo -e "${TITLE_COLOR}--- 健康检测管理 ---${RESET}"
@@ -844,8 +876,28 @@ manage_health_checks() {
                 
                 _log info "已选择上游: $upstream_addr"
                 _log info "检测脚本要求: 退出状态码 0 表示正常, 其他所有值均视为异常。"
-                read -e -p "请输入脚本路径 [默认: $DEFAULT_PING_SCRIPT_PATH]: " script_path
-                script_path=${script_path:-$DEFAULT_PING_SCRIPT_PATH}
+
+
+                echo "-------------------------------------"
+                _log info "请选择检测脚本类型:"
+                echo "  1) ICMP Ping (ping_check.sh) - 检查网络可达性"
+                echo "  2) TCP Ping  (tcp_ping_check.sh) - 检查端口可用性"
+                read -e -p "请选择 [默认: 1]: " script_choice
+                script_choice=${script_choice:-1}
+                
+                local default_script_path=""
+                if [[ "$script_choice" == "1" ]]; then
+                    default_script_path="$DEFAULT_PING_SCRIPT_PATH"
+                elif [[ "$script_choice" == "2" ]]; then
+                    default_script_path="$DEFAULT_TCP_PING_SCRIPT_PATH"
+                else
+                    _log err "无效选择。"
+                    sleep 2
+                    continue
+                fi
+                
+                read -e -p "请输入脚本路径 [默认: $default_script_path]: " script_path
+                script_path=${script_path:-$default_script_path}
                 
                 if [[ ! -f "$script_path" ]] || [[ ! -x "$script_path" ]]; then
                     _log err "脚本不存在或没有执行权限: $script_path"
@@ -975,12 +1027,10 @@ configure_health_check_cycle() {
         fi
         _log succ "健康检测周期已更新为: ${new_cron}"
         
-        if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
+        if systemctl is-active --quiet realm_health_check; then
             read -e -p "健康检测服务正在运行。是否要立即重启以应用新的周期? [Y/n]: " restart_choice
             if [[ ${restart_choice:-Y} =~ ^[Yy]$ ]]; then
                 _log info "正在重启健康检测服务..."
-                stop_health_check_daemon
-                sleep 1
                 start_or_restart_health_check_daemon
             else
                 _log warn "配置已更新，但服务未重启。新的周期将在下次手动启动服务时生效。"
@@ -995,70 +1045,134 @@ configure_health_check_cycle() {
 
 
 start_or_restart_health_check_daemon() {
+
     if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
-        _log info "健康检测守护进程已在运行，现在将重启它..."
-        stop_health_check_daemon
+        _log warn "检测到由旧版脚本启动的健康守护进程 (PID: $(cat "$DAEMON_PID_FILE"))。"
+        _log info "正在停止旧版进程以便转换为 systemd 服务管理..."
+        kill "$(cat "$DAEMON_PID_FILE")"
+        rm -f "$DAEMON_PID_FILE"
         sleep 1
+        _log succ "旧版进程已停止。"
     fi
 
-    _log info "正在以后台守护进程方式启动 Python 健康检测服务..."
+    _log info "正在为健康检测服务准备环境配置文件..."
+    mkdir -p "$(dirname "$DAEMON_CONFIG_FILE")"
     
     local cron_from_file
     cron_from_file=$(grep "^HEALTH_CHECK_CRON=" "$DAEMON_CONFIG_FILE" 2>/dev/null | cut -d'=' -f2-)
-    export HEALTH_CHECK_CRON="${cron_from_file:-"*/5 * * * *"}"
+    local effective_cron="${cron_from_file:-"*/5 * * * *"}"
 
     detect_config_file
-    export REALM_CONFIG_FILE
-    export REALM_CONFIG_DIR
-    export HEALTH_CHECKS_FILE
-    export STATE_BACKUP_FILE
     
-    nohup bash "$PYTHON_EXECUTOR_SCRIPT" start_daemon >> "$HEALTH_CHECK_LOG_FILE" 2>&1 &
-    echo $! > "$DAEMON_PID_FILE"
+
+    cat > "$DAEMON_CONFIG_FILE" <<EOF
+HEALTH_CHECK_CRON=${effective_cron}
+REALM_CONFIG_DIR=${REALM_CONFIG_DIR}
+REALM_CONFIG_FILE=${REALM_CONFIG_FILE}
+HEALTH_CHECKS_FILE=${HEALTH_CHECK_CONFIG_FILE}
+STATE_BACKUP_FILE=${STATE_BACKUP_FILE}
+VENV_PYTHON=${VENV_PATH}/bin/python3
+HEALTH_CHECK_LOG_FILE=${HEALTH_CHECK_LOG_FILE}
+EOF
+    
+
+    if [[ ! -f "$DAEMON_SERVICE_FILE" ]]; then
+        _log info "正在创建健康检测服务的 systemd 单元文件: $DAEMON_SERVICE_FILE"
+        cat > "$DAEMON_SERVICE_FILE" <<EOF
+[Unit]
+Description=Realm Health Check Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${PYTHON_EXECUTOR_SCRIPT} start_daemon
+EnvironmentFile=${DAEMON_CONFIG_FILE}
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:${HEALTH_CHECK_LOG_FILE}
+StandardError=append:${HEALTH_CHECK_LOG_FILE}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        _log succ "Systemd 单元文件创建成功。"
+    fi
+
+    _log info "正在启用并启动(或重启)健康检测服务 (realm_health_check.service)..."
+
+    systemctl enable realm_health_check >/dev/null 2>&1
+
+    systemctl restart realm_health_check
 
     sleep 1
-    if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
-        _log succ "健康检测守护进程已启动 (PID: $(cat "$DAEMON_PID_FILE"))."
+    if systemctl is-active --quiet realm_health_check; then
+        _log succ "健康检测服务已成功启动。"
+        _log info "可使用 'systemctl status realm_health_check' 或菜单选项 10 查看状态。"
         _log info "日志文件: tail -f $HEALTH_CHECK_LOG_FILE"
     else
-        _log err "启动健康检测守护进程失败。"
+        _log err "启动健康检测服务失败。"
+        _log err "请检查日志: journalctl -u realm_health_check -n 50"
     fi
 }
 
 
 stop_health_check_daemon() {
-    if [[ ! -f "$DAEMON_PID_FILE" ]] || ! ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
-        _log warn "健康检测守护进程未运行。"
+    _log info "开始停止健康检测服务..."
+    local stopped_systemd=false
+    local stopped_pid=false
+
+
+    if systemctl is-active --quiet realm_health_check; then
+        _log info "正在停止 systemd 服务 (realm_health_check.service)..."
+        systemctl stop realm_health_check
+        stopped_systemd=true
+    fi
+
+    if systemctl list-units --all --type=service | grep -q 'realm_health_check.service'; then
+        _log info "正在禁用 systemd 服务..."
+        systemctl disable realm_health_check >/dev/null 2>&1
+    fi
+    
+
+    if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
+        _log warn "检测到旧版 PID 文件，正在停止相关进程..."
+        kill "$(cat "$DAEMON_PID_FILE")"
         rm -f "$DAEMON_PID_FILE"
-        return
+        stopped_pid=true
     fi
+    
 
-    local pid
-    pid=$(cat "$DAEMON_PID_FILE")
-    _log info "正在停止健康检测守护进程 (PID: $pid)..."
-    
-    kill "$pid"
-    sleep 1
-    
-    if ps -p "$pid" > /dev/null; then
-        _log warn "无法正常停止，将强制终止..."
-        kill -9 "$pid"
+    if [[ "$stopped_systemd" == true || "$stopped_pid" == true ]]; then
+        _log succ "健康检测服务已停止。"
+    else
+        _log warn "未检测到正在运行的健康检测服务。"
     fi
-
-    rm -f "$DAEMON_PID_FILE"
-    _log succ "健康检测守护进程已停止。"
 }
 
 
 status_health_check_daemon() {
-    if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
-        _log succ "健康检测守护进程正在运行 (PID: $(cat "$DAEMON_PID_FILE"))."
-        echo "--- 最近30条日志 ---"
-        tail -n 30 "$HEALTH_CHECK_LOG_FILE"
-    else
-        _log err "健康检测守护进程未运行。"
+
+    if ! systemctl list-units --all --type=service | grep -q 'realm_health_check.service'; then
+
+       if [[ -f "$DAEMON_PID_FILE" ]] && ps -p "$(cat "$DAEMON_PID_FILE")" > /dev/null; then
+            _log warn "检测到由旧版脚本启动的进程(PID: $(cat "$DAEMON_PID_FILE"))，但未找到 systemd 服务。"
+            _log warn "建议使用菜单选项 [8] 来将其转换为 systemd 服务管理。"
+       else
+            _log warn "健康检测服务从未安装过。"
+       fi
+       return
     fi
+
+    _log info "正在获取健康检测服务状态 (realm_health_check.service)..."
+    echo "---"
+
+    systemctl status realm_health_check --no-pager
+    echo "---"
 }
+
 
 
 update_management_script() {
