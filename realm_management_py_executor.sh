@@ -99,6 +99,7 @@ init_and_activate_env() {
                 pm="apt"
             elif command -v "yum" &>/dev/null; then
                 pm="yum"
+
             elif command -v "dnf" &>/dev/null; then
                 pm="dnf"
             fi
@@ -173,7 +174,9 @@ init_and_activate_env() {
 
 
 
+
 ACTION="$1"
+
 shift 
 
 init_and_activate_env
@@ -182,15 +185,18 @@ ACTIVE_PYTHON=$(type -p python)
 
 case "$ACTION" in
     init_env)
-        :
+        : # 什么都不做，因为 init_and_activate_env 总是会执行
         ;;
     validate_config)
-        "$ACTIVE_PYTHON" "$VALIDATOR_SCRIPT_PATH" --file "$1"
+
+        "$ACTIVE_PYTHON" "$VALIDATOR_SCRIPT_PATH" "$@"
         ;;
     parse_upstreams)
+
         "$ACTIVE_PYTHON" "$DAEMON_SCRIPT_PATH" --action parse_upstreams --file "$1"
         ;;
     modify_state)
+
         "$ACTIVE_PYTHON" "$DAEMON_SCRIPT_PATH" --action "$1" --address "$2" --file "$3" --state-file "$4"
         ;;
     start_daemon)

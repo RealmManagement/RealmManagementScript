@@ -9,7 +9,7 @@
 
 SCRIPT_NAME="Realm 管理脚本"
 
-SCRIPT_VERSION="2.1"
+SCRIPT_VERSION="2.2"
 
 
 
@@ -184,7 +184,7 @@ check_dependencies() {
         "head" "kill" "mkdir" "mv" "nohup" "ping" "pgrep" "ps"
         "read" "readarray" "realpath" "rm" "sed" "sleep" "ss"
         "source" "sort" "systemctl" "tail" "tar" "tee" "timeout"
-        "touch" "tr" "uname" "wc"
+        "touch" "tr" "uname" "wc" "mktemp"
     )
     
     for cmd in "${required_cmds[@]}"; do
@@ -223,33 +223,17 @@ check_dependencies() {
         local packages_to_install=()
         for cmd in "${missing_cmds[@]}"; do
             case "$cmd" in
-                awk)
-                    packages_to_install+=("gawk")
-                    ;;
-                ss)
-                    packages_to_install+=("iproute2")
-                    ;;
+                awk) packages_to_install+=("gawk");;
+                ss) packages_to_install+=("iproute2");;
                 ping|timeout)
-                    if [[ "$pm" == "apk" ]]; then
-                        packages_to_install+=("iputils")
-                    elif [[ "$pm" == "pacman" ]]; then
-                        packages_to_install+=("inetutils")
-                    else
-                        packages_to_install+=("inetutils-ping" "coreutils")
-                    fi
-                    ;;
-                realpath|cat|chmod|clear|cut|date|dirname|echo|find|head|mkdir|mv|rm|sleep|sort|tail|touch|tr|uname|wc)
-                    packages_to_install+=("coreutils")
-                    ;;
-                ps|kill|pgrep)
-                    packages_to_install+=("procps")
-                    ;;
-                file)
-                    packages_to_install+=("file")
-                    ;;
-                *)
-                    packages_to_install+=("$cmd")
-                    ;;
+                    if [[ "$pm" == "apk" ]]; then packages_to_install+=("iputils");
+                    elif [[ "$pm" == "pacman" ]]; then packages_to_install+=("inetutils");
+                    else packages_to_install+=("inetutils-ping" "coreutils"); fi;;
+                realpath|cat|chmod|clear|cut|date|dirname|echo|find|head|mkdir|mv|rm|sleep|sort|tail|touch|tr|uname|wc|mktemp)
+                    packages_to_install+=("coreutils");;
+                ps|kill|pgrep) packages_to_install+=("procps");;
+                file) packages_to_install+=("file");;
+                *) packages_to_install+=("$cmd");;
             esac
         done
 
@@ -257,14 +241,10 @@ check_dependencies() {
         _log info "将要安装的包: ${packages_to_install[*]}"
         
         local install_cmd_str
-        if [[ "$pm" == "apt" ]]; then
-            install_cmd_str="apt-get update && apt-get install -y"
-        elif [[ "$pm" == "yum" || "$pm" == "dnf" ]]; then
-            install_cmd_str="$pm makecache && $pm install -y"
-        elif [[ "$pm" == "pacman" ]]; then
-            install_cmd_str="pacman -Sy --noconfirm"
-        elif [[ "$pm" == "apk" ]]; then
-            install_cmd_str="apk update && apk add"
+        if [[ "$pm" == "apt" ]]; then install_cmd_str="apt-get update && apt-get install -y"
+        elif [[ "$pm" == "yum" || "$pm" == "dnf" ]]; then install_cmd_str="$pm makecache && $pm install -y"
+        elif [[ "$pm" == "pacman" ]]; then install_cmd_str="pacman -Sy --noconfirm"
+        elif [[ "$pm" == "apk" ]]; then install_cmd_str="apk update && apk add"
         fi
 
         _log info "正在执行安装命令..."
@@ -370,32 +350,18 @@ install_realm() {
 
     local libc_type=""
     case "$libc_choice" in
-        1)
-            libc_type="gnu"
-            ;;
-        2)
-            libc_type="musl"
-            ;;
-        *)
-            _log err "无效选项, 已退出安装。"
-            return 1
-            ;;
+        1) libc_type="gnu" ;;
+        2) libc_type="musl" ;;
+        *) _log err "无效选项, 已退出安装。"; return 1 ;;
     esac
     _log info "已选择安装 ${libc_type} 版本。"
 
     ARCH=$(uname -m)
     local REALM_ARCH=""
     case "$ARCH" in
-        x86_64)
-            REALM_ARCH="x86_64-unknown-linux-${libc_type}"
-            ;;
-        aarch64)
-            REALM_ARCH="aarch64-unknown-linux-${libc_type}"
-            ;;
-        *)
-            _log err "不支持的系统架构: $ARCH"
-            exit 1
-            ;;
+        x86_64) REALM_ARCH="x86_64-unknown-linux-${libc_type}" ;;
+        aarch64) REALM_ARCH="aarch64-unknown-linux-${libc_type}" ;;
+        *) _log err "不支持的系统架构: $ARCH"; exit 1 ;;
     esac
 
     _log info "正在从 GitHub API 获取最新的版本标签..."
@@ -448,9 +414,13 @@ install_realm() {
             _log info "创建默认配置文件: $REALM_CONFIG_FILE"
             cat > "$REALM_CONFIG_FILE" <<EOF
 
-log_level = "info"
-log_path = "/var/log/realm.log"
+[log]
+level = "info"
+output = "/var/log/realm.log"
 
+[[endpoints]]
+listen = "0.0.0.0:10000"
+remote = "127.0.0.1:20000"
 EOF
         fi
         _log info "创建 systemd 服务文件..."
@@ -565,38 +535,123 @@ manage_config() {
     "$editor" "$REALM_CONFIG_FILE"
     _log info "配置文件已保存。"
 
-    read -e -p "是否立即检查配置文件有效性? [Y/n]: " check_now
-    check_now=${check_now:-Y}
-    if [[ "$check_now" == "y" || "$check_now" == "Y" ]]; then
-        check_config_and_start "check_only"
+    read -e -p "是否立即检查配置并重启服务以应用更改? [Y/n]: " restart_now
+    restart_now=${restart_now:-Y}
+    if [[ "$restart_now" == "y" || "$restart_now" == "Y" ]]; then
+        _log warn "重要提示：通过管理配置文件功能重启Realm时，默认您已修改配置文件至完整状态，"
+        _log warn "将清空配置文件状态记录文件，以防止健康检测功能误恢复可能已不再使用的配置项。"
+        read -e -p "您理解并确认要继续吗? [Y/n]: " confirm_clear
+        confirm_clear=${confirm_clear:-Y}
+        if [[ "$confirm_clear" == "y" || "$confirm_clear" == "Y" ]]; then
+
+            check_config_and_start "" "from_manual_edit"
+        else
+            _log info "操作已取消。状态记录文件未被清空。"
+            _log warn "您需要稍后手动重启Realm服务以应用配置更改。"
+        fi
+    else
+        _log warn "您需要稍后手动重启Realm服务以应用配置更改。"
     fi
-    _log warn "您需要重启Realm服务以应用配置更改。"
 }
 
 
 check_config_and_start() {
-    local mode="$1" 
+    local mode="$1"
+    local source_action="$2"
+    
     detect_config_file
     if [[ ! -f "$REALM_CONFIG_FILE" ]]; then
         _log err "配置文件不存在，无法操作！"
-        return
+        return 1
     fi
 
-    _log info "正在通过执行器检查配置文件有效性..."
-    if bash "$PYTHON_EXECUTOR_SCRIPT" validate_config "$REALM_CONFIG_FILE"; then
-        if [[ "$mode" != "check_only" ]]; then
-            _log info "正在启动/重启 Realm 服务..."
-            systemctl restart realm
-            sleep 1
-            _log info "当前服务状态:"
-            systemctl status realm --no-pager
+    _log info "正在通过执行器检查配置文件有效性 (并尝试自动校正)..."
+    
+
+    local stderr_file
+    stderr_file=$(mktemp)
+    
+
+
+
+    local fixed_config
+    fixed_config=$(bash "$PYTHON_EXECUTOR_SCRIPT" validate_config --file "$REALM_CONFIG_FILE" --autofix 2> "$stderr_file")
+    local exit_code=$?
+    
+
+    local validator_logs
+    validator_logs=$(cat "$stderr_file")
+    
+
+    rm "$stderr_file"
+    
+
+    if [[ -n "$validator_logs" ]]; then
+        echo "--- [校验脚本输出] ---"
+        echo -e "$validator_logs"
+        echo "------------------------"
+    fi
+
+
+    if [[ $exit_code -ne 0 ]]; then
+        _log err "配置文件检查失败！请根据以上错误提示修改配置。"
+        return 1
+    fi
+
+
+    if echo "$validator_logs" | grep -q "\[警告\]"; then
+        _log warn "检测到您的配置文件中存在不规范的内容，脚本已自动校正。"
+        
+
+        if [[ "$mode" == "check_only" ]]; then
+            _log info "您当前处于'仅检查'模式。以下是校正后的内容预览："
+            echo "--- [校正后内容预览] ---"
+            echo "$fixed_config"
+            echo "--------------------------"
+            _log info "如需应用更改，请使用菜单中的'管理配置文件'或'启动/重启'功能。"
+            return 0
         fi
-    else
-        _log err "配置文件检查失败！请根据以上错误提示修改配置后重试。"
-        if [[ "$mode" != "check_only" ]]; then
-            _log err "Realm 服务未启动/重启。"
+
+        echo "--- [校正后内容预览] ---"
+        echo "$fixed_config"
+        echo "--------------------------"
+        read -e -p "是否要将以上自动校正的内容写入配置文件? [Y/n]: " choice
+        choice=${choice:-Y}
+        if [[ "$choice" == "Y" ]] || [[ "$choice" == "y" ]]; then
+            _log info "正在将校正后的配置写入文件: $REALM_CONFIG_FILE"
+
+            local tmp_write_file
+            tmp_write_file=$(mktemp)
+            echo "$fixed_config" > "$tmp_write_file"
+            mv "$tmp_write_file" "$REALM_CONFIG_FILE"
+            _log succ "配置文件已成功更新！"
+        else
+            _log info "用户取消操作。配置文件未被修改。"
+            _log warn "为避免服务状态与配置文件不一致，将取消本次启动/重启操作。"
+            return 1
         fi
     fi
+
+
+    if [[ "$mode" == "check_only" ]]; then
+        _log succ "配置文件检查通过，未发现问题。"
+        return 0
+    fi
+    
+
+    if [[ "$source_action" == "from_manual_edit" ]]; then
+        if [[ -f "$STATE_BACKUP_FILE" ]]; then
+            _log warn "检测到手动修改配置并重启，这将清空健康检测的状态备份。"
+            > "$STATE_BACKUP_FILE"
+            _log succ "状态备份文件 ($STATE_BACKUP_FILE) 已清空。"
+        fi
+    fi
+    
+    _log info "正在启动/重启 Realm 服务..."
+    systemctl restart realm
+    sleep 1
+    _log info "当前服务状态:"
+    systemctl status realm --no-pager
 }
 
 
@@ -1223,63 +1278,20 @@ main_menu() {
 
         local needs_pause=true
         case "$choice" in
-            1)
-                install_realm
-                ;;
-            2)
-                uninstall_realm
-                ;;
-            3)
-                check_config_and_start
-                ;;
-            4)
-                stop_realm
-                ;;
-            5)
-                manage_config
-                needs_pause=false
-                ;;
-            6)
-                check_config_and_start "check_only"
-                ;;
-            7)
-                if check_python_dependency; then
-                    manage_health_checks
-                    needs_pause=false
-                fi
-                ;;
-            8)
-                if check_python_dependency; then
-                    start_or_restart_health_check_daemon
-                fi
-                ;;
-            9)
-                if check_python_dependency; then
-                    stop_health_check_daemon
-                fi
-                ;;
-            10)
-                if check_python_dependency; then
-                    status_health_check_daemon
-                fi
-                ;;
-            11)
-                if check_python_dependency; then
-                    configure_health_check_cycle
-                fi
-                ;;
-            12)
-                update_management_script
-
-                needs_pause=false
-                ;;
-            0)
-                _log info "退出脚本。"
-                exit 0
-                ;;
-            *)
-                _log err "无效的输入，请重试。"
-                ;;
+            1) install_realm ;;
+            2) uninstall_realm ;;
+            3) check_config_and_start ;;
+            4) stop_realm ;;
+            5) manage_config; needs_pause=false ;;
+            6) check_config_and_start "check_only" ;;
+            7) if check_python_dependency; then manage_health_checks; needs_pause=false; fi ;;
+            8) if check_python_dependency; then start_or_restart_health_check_daemon; fi ;;
+            9) if check_python_dependency; then stop_health_check_daemon; fi ;;
+            10) if check_python_dependency; then status_health_check_daemon; fi ;;
+            11) if check_python_dependency; then configure_health_check_cycle; fi ;;
+            12) update_management_script; needs_pause=false ;;
+            0) _log info "退出脚本。"; exit 0 ;;
+            *) _log err "无效的输入，请重试。" ;;
         esac
         
         if [[ "$needs_pause" == true ]]; then
