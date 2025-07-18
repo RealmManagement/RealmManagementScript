@@ -9,7 +9,7 @@
 
 SCRIPT_NAME="Realm 管理脚本"
 
-SCRIPT_VERSION="2.2"
+SCRIPT_VERSION="2.3"
 
 
 
@@ -895,17 +895,20 @@ manage_health_checks() {
             echo "当前没有配置任何健康检测。"
         fi
         echo "-------------------------------------"
-        echo "1. 添加一个新的上游检测"
+
+        echo "1. 添加新的上游检测"
         echo "2. 删除一个上游检测"
         echo "3. 立即执行一次检测"
         echo "0. 返回主菜单"
         read -e -p "请选择: " choice
 
         case "$choice" in
+
             1)
                 detect_config_file
                 local upstreams=()
                 if [[ -f "$REALM_CONFIG_FILE" ]]; then
+
                     while IFS= read -r line; do
                         upstreams+=("$line")
                     done < <(parse_upstreams_from_config)
@@ -917,24 +920,54 @@ manage_health_checks() {
                     continue
                 fi
                 
-                _log info "请从以下检测到的上游地址中选择一个:"
-                
-                PS3="请选择一个上游地址编号: "
-                local upstream_addr
-                select upstream_addr in "${upstreams[@]}"; do
-                    if [[ -n "$upstream_addr" ]]; then
-                        break
-                    else
-                        echo "无效选择，请重新输入。"
-                    fi
+                _log info "请从以下检测到的上游地址中选择:"
+
+                for i in "${!upstreams[@]}"; do
+                    printf "  %2d) %s\n" "$((i+1))" "${upstreams[i]}"
                 done
                 
-                _log info "已选择上游: $upstream_addr"
+
+                _log info "请输入要选择的地址编号，单个或多个(以空格分隔)，或输入 'all' 选择全部。"
+                read -e -p "请选择: " user_choices
+
+                local selected_indices=()
+                if [[ "$user_choices" == "all" ]]; then
+
+                    selected_indices=($(seq 1 ${#upstreams[@]}))
+                else
+
+                    read -ra selected_indices <<< "$user_choices"
+                fi
+
+                local selected_upstreams=()
+                local invalid_choice=false
+
+                for index in "${selected_indices[@]}"; do
+                    if ! [[ "$index" =~ ^[1-9][0-9]*$ ]] || (( index > ${#upstreams[@]} )); then
+                        _log err "输入无效: '$index'。请输入列表中的有效编号。"
+                        invalid_choice=true
+                        break
+                    fi
+
+                    selected_upstreams+=("${upstreams[$((index-1))]}")
+                done
+
+                if [[ "$invalid_choice" == true ]] || [[ ${#selected_upstreams[@]} -eq 0 ]]; then
+                    _log warn "没有选择任何有效的上游地址。"
+                    sleep 2
+                    continue
+                fi
+                
+
+                _log info "您已选择以下 ${#selected_upstreams[@]} 个上游地址:"
+                for addr in "${selected_upstreams[@]}"; do
+                    echo "  - $addr"
+                done
+
+
                 _log info "检测脚本要求: 退出状态码 0 表示正常, 其他所有值均视为异常。"
-
-
                 echo "-------------------------------------"
-                _log info "请选择检测脚本类型:"
+                _log info "请为这些上游地址统一配置检测脚本:"
                 echo "  1) ICMP Ping (ping_check.sh) - 检查网络可达性"
                 echo "  2) TCP Ping  (tcp_ping_check.sh) - 检查端口可用性"
                 read -e -p "请选择 [默认: 1]: " script_choice
@@ -963,19 +996,21 @@ manage_health_checks() {
                 mkdir -p "$(dirname "$HEALTH_CHECK_CONFIG_FILE")"
                 touch "$HEALTH_CHECK_CONFIG_FILE"
                 
-                local escaped_addr
-                escaped_addr=$(sed 's/[&/\]/\\&/g' <<< "$upstream_addr")
-                sed -i "/^${escaped_addr}=/d" "$HEALTH_CHECK_CONFIG_FILE"
-                
-                echo "${upstream_addr}=${script_path}" >> "$HEALTH_CHECK_CONFIG_FILE"
 
-                if grep -qF -- "${upstream_addr}=${script_path}" "$HEALTH_CHECK_CONFIG_FILE"; then
-                    _log succ "已为 '$upstream_addr' 配置检测脚本。"
-                else
-                    _log err "配置检测脚本失败，请检查文件权限。"
-                fi
+                local success_count=0
+                for upstream_addr in "${selected_upstreams[@]}"; do
+                    local escaped_addr
+                    escaped_addr=$(sed 's/[&/\]/\\&/g' <<< "$upstream_addr")
+
+                    sed -i "/^${escaped_addr}=/d" "$HEALTH_CHECK_CONFIG_FILE"
+                    echo "${upstream_addr}=${script_path}" >> "$HEALTH_CHECK_CONFIG_FILE"
+                    ((success_count++))
+                done
+
+                _log succ "已成功为 ${success_count} 个上游地址配置了检测脚本。"
                 sleep 2
                 ;;
+
             2) 
                 if [[ ! -s "$HEALTH_CHECK_CONFIG_FILE" ]]; then
                     _log warn "没有可删除的配置。"
